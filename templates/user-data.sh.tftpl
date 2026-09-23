@@ -1,0 +1,88 @@
+#!/bin/bash
+# ==============================================================================
+# Turns this Amazon Linux 2023 instance into a NAT for the allowed ranges:
+#
+#   ${join(", ", allowed_cidr_blocks)}
+#
+# The work is done by a systemd service rather than here, so that it
+#   - runs again on every boot (forwarding and rules do not survive a reboot),
+#   - retries until it succeeds: the instance may have no internet access for
+#     its first moments, until its Elastic IP is attached, and installing
+#     nftables needs it.
+# ==============================================================================
+set -euo pipefail
+
+cat > /usr/local/sbin/nat-instance-setup.sh <<'SETUP'
+#!/bin/bash
+set -euo pipefail
+
+if ! command -v nft >/dev/null 2>&1; then
+  dnf install -y nftables
+fi
+
+# Forward packets between interfaces; a NAT host sends no ICMP redirects.
+sysctl -q -w net.ipv4.ip_forward=1
+sysctl -q -w net.ipv4.conf.all.send_redirects=0
+
+# The interface the default route leaves by: the one with the Elastic IP.
+interface="$(ip -4 route show default | awk '{ print $5; exit }')"
+if [[ -z "$interface" ]]; then
+  echo "No default route yet." >&2
+  exit 1
+fi
+
+# Declaring, deleting and redeclaring the table makes this safe to run again:
+# the rules are replaced, never duplicated.
+nft -f - <<RULES
+table ip nat_instance
+delete table ip nat_instance
+table ip nat_instance {
+  set allowed {
+    type ipv4_addr
+    flags interval
+    elements = { ${join(", ", allowed_cidr_blocks)} }
+  }
+
+  # Only the allowed ranges are forwarded, and only replies come back: this is
+  # not an open relay.
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+    ct state established,related accept
+    ip saddr @allowed oifname "$interface" accept
+  }
+
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+    ip saddr @allowed oifname "$interface" masquerade
+  }
+}
+RULES
+
+echo "NAT configured on $interface."
+SETUP
+chmod 0755 /usr/local/sbin/nat-instance-setup.sh
+
+cat > /etc/sysctl.d/90-nat-instance.conf <<'SYSCTL'
+net.ipv4.ip_forward = 1
+net.ipv4.conf.all.send_redirects = 0
+SYSCTL
+
+cat > /etc/systemd/system/nat-instance.service <<'UNIT'
+[Unit]
+Description=Configure this instance as a NAT
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/nat-instance-setup.sh
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now --no-block nat-instance.service
