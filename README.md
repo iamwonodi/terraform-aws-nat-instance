@@ -49,7 +49,7 @@ Use it where cost matters more than a few minutes of outbound outage; keep a NAT
 
 ```hcl
 module "nat_instance" {
-  source = "git::https://github.com/iamwonodi/terraform-aws-nat-instance.git?ref=v1.0.0"
+  source = "git::https://github.com/iamwonodi/terraform-aws-nat-instance.git?ref=v1.0.1"
 
   project_name = "acme"
   environment  = "staging"
@@ -169,7 +169,9 @@ Run the tests with `terraform init -backend=false && terraform test`; the provid
 
 # Versioning
 
-Semantic Versioning; consume by tag. Current release: `v1.0.0`.
+Semantic Versioning; consume by tag. Current release: `v1.0.1`.
+
+`v1.0.1` fixes the outbound rule's description. `v1.0.0`'s contained an apostrophe, which AWS refuses in security group rule descriptions: the rule was never created, so the instance had no outbound access and could not translate anything, or reach Session Manager. A test now checks every description the module sends to AWS. Inputs and outputs are unchanged. An instance deployed with `v1.0.0` recovers once the rule exists: its setup service keeps retrying until it can install nftables.
 
 ---
 

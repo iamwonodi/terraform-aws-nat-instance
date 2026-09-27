@@ -174,3 +174,20 @@ run "a_malformed_range_is_refused" {
 
   expect_failures = [var.allowed_cidr_blocks]
 }
+
+# AWS accepts only these characters in security group and rule descriptions;
+# anything else passes the plan and fails the apply (v1.0.0's egress rule had
+# an apostrophe, so the instance had no outbound rule and could not NAT).
+run "descriptions_use_only_characters_aws_accepts" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for d in concat(
+        [aws_security_group.this.description, aws_vpc_security_group_egress_rule.to_internet.description],
+        [for r in aws_vpc_security_group_ingress_rule.from_allowed : r.description],
+      ) : length(d) <= 255 && can(regex("^[a-zA-Z0-9 ._:/()#,@\\[\\]+=&;{}!$*-]*$", d))
+    ])
+    error_message = "a security group or rule description uses a character AWS refuses"
+  }
+}
